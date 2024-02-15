@@ -2,6 +2,9 @@ import discord
 import yt_dlp
 import asyncio
 import random
+import logging
+import datetime
+logger = logging.getLogger(__name__)
 
 class MusicPlayer:
     def __init__(self, client):
@@ -16,9 +19,11 @@ class MusicPlayer:
         self.loop_song = False
         self.current_title = None  # Initialize current title
 
+
     async def join_channel(self, voice_channel):
-        if self.voice_client and self.voice_client.is_connected():
-            await self.voice_client.move_to(voice_channel)
+        if self.voice_client:
+            if self.voice_client.channel != voice_channel:
+                await self.voice_client.move_to(voice_channel)
         else:
             self.voice_client = await voice_channel.connect()
 
@@ -30,14 +35,23 @@ class MusicPlayer:
             'extract_flat': True,
         }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info_dict = ydl.extract_info(youtube_url, download=False)
-            if 'entries' in info_dict:  # It's a playlist
-                return [(entry['url'], entry.get('title', 'Unknown Title')) for entry in info_dict['entries']]
-            else:  # It's a single video
-                audio_url = info_dict.get('url', None)
-                title = info_dict.get('title', 'Unknown Title')
-                return [(audio_url, title)]
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info_dict = ydl.extract_info(youtube_url, download=False)
+                if 'entries' in info_dict:  # It's a playlist
+                    urls = [(entry['url'], entry.get('title', 'Unknown Title'), entry.get('duration', 0)) for entry in
+                            info_dict['entries']]
+                    logger.info(f"Playlist URLs: {urls}")
+                    return urls
+                else:  # It's a single video
+                    audio_url = info_dict.get('url', None)
+                    title = info_dict.get('title', 'Unknown Title')
+                    duration = info_dict.get('duration', 0)  # Duration in seconds
+                    logger.info(f"Single Video URL: {audio_url}, Title: {title}, Duration: {duration}")
+                    return [(audio_url, title, duration)]
+        except Exception as e:
+            logger.error(f"Failed to get audio URL for {youtube_url}: {e}")
+            return []
 
     def change_volume(self, volume_level):
         if 0 <= volume_level <= 100:  # Ensure volume is between 0 and 100
@@ -45,9 +59,38 @@ class MusicPlayer:
             if self.voice_client and self.voice_client.source:
                 self.voice_client.source.volume = self.volume
 
+    async def fetch_voice_client(self):
+        if self.voice_client is None or not self.voice_client.is_connected():
+            self.voice_client = discord.utils.get(self.bot.voice_clients, guild=self.guild)
+            if self.voice_client is None:
+                logger.error("Bot is not connected to a voice channel.")
+                return False
+        return True
+
+    async def send_now_playing_message(self, youtube_url, title):
+        embed = discord.Embed(title="Now Playing", description=f"[{title}]({youtube_url})", color=0x00ff00)
+        if self.text_channel:
+            self.now_playing_message = await self.text_channel.send(embed=embed)
+
+    async def play_audio(self, audio_url):
+        FFMPEG_OPTIONS = {
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            'options': '-vn',
+        }
+        try:
+            audio_source = discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS)
+            audio_source = discord.PCMVolumeTransformer(audio_source, volume=self.volume)
+            self.voice_client.play(audio_source, after=self.handle_after)
+        except Exception as e:
+            logger.error(f"Failed to play audio: {e}")
+            return False
+        return True
+
     async def play_next(self):
+        if not await self.fetch_voice_client():
+            return
+
         if self.now_playing_message:
-            # Delete the previous 'Now Playing' message
             try:
                 await self.now_playing_message.delete()
             except discord.NotFound:
@@ -55,40 +98,31 @@ class MusicPlayer:
             self.now_playing_message = None
 
         if len(self.queue) > 0:
-            youtube_url, title = self.queue.pop(0)
+            # Update this line to unpack three values
+            youtube_url, title, duration = self.queue.pop(0)
+
             audio_url_list = self.get_audio_url(youtube_url)
             if audio_url_list:
-                audio_url, _ = audio_url_list[0]  # Get the first tuple from the list
+                # Assuming get_audio_url returns a list of tuples, where each tuple now also includes a duration
+                audio_url, _, _ = audio_url_list[
+                    0]  # We ignore the title and duration from get_audio_url, as we already have them
                 self.now_playing = youtube_url
                 self.current_title = title
 
-                # Send 'Now Playing' message here and only once
-                embed = discord.Embed(title="Now Playing", description=f"[{title}]({youtube_url})", color=0x00ff00)
-                if self.text_channel:
-                    self.now_playing_message = await self.text_channel.send(embed=embed)
+                await self.send_now_playing_message(youtube_url, title)
 
-                FFMPEG_OPTIONS = {
-                    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-                    'options': '-vn',
-                }
-
-                # Create the FFmpegPCMAudio source and apply volume control
-                audio_source = discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS)
-                audio_source = discord.PCMVolumeTransformer(audio_source, volume=self.volume)
-                self.voice_client.play(audio_source, after=self.handle_after)
+                if not await self.play_audio(audio_url):
+                    return
 
                 if self.loop_queue and not self.loop_song:
-                    # Add the song back to the end of the queue if loop_queue is enabled
-                    self.queue.append((youtube_url, title))
-
+                    # When re-adding the song to the queue, remember to include the duration
+                    self.queue.append((youtube_url, title, duration))
         else:
-            # When queue is empty
             self.now_playing = None
             self.current_title = None
             if self.voice_client and not self.voice_client.is_playing():
                 await self.voice_client.disconnect()
                 self.voice_client = None
-
 
     def handle_after(self, error):
         if error:
@@ -141,7 +175,8 @@ class MusicPlayer:
     async def queue_single_video(self, info_dict):
         audio_url = info_dict.get('url', None)
         title = info_dict.get('title', 'Unknown Title')
-        self.queue.append((audio_url, title))
+        duration = info_dict.get('duration', 0)  # Fetch duration
+        self.queue.append((audio_url, title, duration))  # Include duration in the tuple
 
     def youtube_search(self, query):
         ydl_opts = {
@@ -161,16 +196,21 @@ class MusicPlayer:
         return None  # Return None if no results were found
 
     async def skip(self):
-        if len(self.queue) > 1 or (self.voice_client and self.voice_client.is_playing()):
-            if self.voice_client:
+        if self.voice_client:
+            # Save the current song before stopping it
+            current_song = self.now_playing
+
+            # Check if there are any songs left in the queue
+            if self.queue:
+                # Stop the current song
                 self.voice_client.stop()
-            await self.play_next()
-        elif len(self.queue) == 1:
-            # If there's only one song, play it directly without stopping
-            await self.play_next()
-        else:
-            # If the queue is empty, just stop
-            await self.stop()
+
+                # Play the next song
+                await self.play_next()
+            else:
+                # If the queue is empty, add the current song back to the queue and play it
+                self.queue.append(current_song)
+                await self.play_next()
 
 
     async def shuffle_queue(self):
@@ -218,15 +258,24 @@ class MusicPlayer:
             embed = discord.Embed(title="Stopped", description="The music has been stopped.", color=0xff0000)
             await self.text_channel.send(embed=embed)
 
-
     def format_queue(self):
         if not self.queue:
             return discord.Embed(title="Queue is empty", description="There are no songs in the queue.", color=0xff0000)
 
         embed = discord.Embed(title="Music Queue", description="Here are the songs in the queue:", color=0x00ff00)
-        for idx, (youtube_url, _, title) in enumerate(self.queue, start=1):
-            # Integrate the hyperlink directly into the song title
-            embed.add_field(name=f'{idx}. [{title}]({youtube_url})', value="\u200b", inline=False)
+        for idx, (youtube_url, title, duration) in enumerate(self.queue, start=1):
+            # Format duration from seconds to HH:MM:SS
+            formatted_duration = str(datetime.timedelta(seconds=duration))
+
+            # Ensure the title does not exceed 256 characters
+            if len(title) > 245:  # Leave some space for the index and formatting
+                title = title[:245] + '...'
+
+            # Combine title and duration, ensure total length does not exceed 256 characters
+            field_name = f'{idx}. {title} - {formatted_duration}'
+
+            # The field value is just a placeholder as Discord requires a value, but you're using the name for all info
+            embed.add_field(name=field_name, value="\u200b", inline=False)
 
         return embed
 
