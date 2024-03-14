@@ -46,14 +46,14 @@ class MusicPlayer:
                 else:  # It's a single video
                     audio_url = info_dict.get('url', None)
                     title = info_dict.get('title', 'Unknown Title')
-                    duration = info_dict.get('duration', 0)  # Duration in seconds
+                    duration = info_dict.get('duration', 0)  # Get the duration from the video info
                     logger.info(f"Single Video URL: {audio_url}, Title: {title}, Duration: {duration}")
-                    return [(audio_url, title, duration)]
+                    return [(audio_url, title, duration)]  # Return a list containing a tuple with the duration
         except Exception as e:
             logger.error(f"Failed to get audio URL for {youtube_url}: {e}")
             return []
 
-    def change_volume(self, volume_level):
+    def change_volume(self, volume_level):  
         if 0 <= volume_level <= 100:  # Ensure volume is between 0 and 100
             self.volume = volume_level / 100.0  # Convert to decimal
             if self.voice_client and self.voice_client.source:
@@ -98,31 +98,27 @@ class MusicPlayer:
             self.now_playing_message = None
 
         if len(self.queue) > 0:
-            # Update this line to unpack three values
-            youtube_url, title, duration = self.queue.pop(0)
-
+            youtube_url, title, duration = self.queue[0]  # Get the next song from the queue without removing it
             audio_url_list = self.get_audio_url(youtube_url)
             if audio_url_list:
-                # Assuming get_audio_url returns a list of tuples, where each tuple now also includes a duration
-                audio_url, _, _ = audio_url_list[
-                    0]  # We ignore the title and duration from get_audio_url, as we already have them
+                audio_url, _, duration = audio_url_list[0]  # Use the duration from get_audio_url
                 self.now_playing = youtube_url
                 self.current_title = title
-
                 await self.send_now_playing_message(youtube_url, title)
-
-                if not await self.play_audio(audio_url):
-                    return
-
-                if self.loop_queue and not self.loop_song:
-                    # When re-adding the song to the queue, remember to include the duration
-                    self.queue.append((youtube_url, title, duration))
+                if await self.play_audio(audio_url):
+                    if self.loop_queue and not self.loop_song:
+                        self.queue.append((youtube_url, title, duration))
+            self.queue.pop(0)  # Remove the song from the queue
         else:
             self.now_playing = None
             self.current_title = None
             if self.voice_client and not self.voice_client.is_playing():
                 await self.voice_client.disconnect()
                 self.voice_client = None
+
+
+
+
 
     def handle_after(self, error):
         if error:
@@ -196,21 +192,21 @@ class MusicPlayer:
         return None  # Return None if no results were found
 
     async def skip(self):
-        if self.voice_client:
-            # Save the current song before stopping it
-            current_song = self.now_playing
+        if self.voice_client and self.voice_client.is_playing():
+            self.voice_client.stop()
+        
+        if self.loop_song:
+            self.queue.insert(0, (self.now_playing, self.current_title))
+        elif len(self.queue) > 0:
+            await self.play_next()
+        else:
+            self.now_playing = None
+            self.current_title = None
+            if self.voice_client and not self.voice_client.is_playing():
+                await self.voice_client.disconnect()
+                self.voice_client = None
 
-            # Check if there are any songs left in the queue
-            if self.queue:
-                # Stop the current song
-                self.voice_client.stop()
 
-                # Play the next song
-                await self.play_next()
-            else:
-                # If the queue is empty, add the current song back to the queue and play it
-                self.queue.append(current_song)
-                await self.play_next()
 
 
     async def shuffle_queue(self):
