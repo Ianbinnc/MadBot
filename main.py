@@ -12,9 +12,6 @@ class MyClient(discord.Client):
         # Ignore messages sent by the bot
         if message.author == self.user:
             return
-        #Testing----------------------------------------------------------------
-        if message.content == '!test':
-            await message.channel.send('Test successful!')
 
         # Join the voice channel and play music
         if message.content.startswith('!play'):

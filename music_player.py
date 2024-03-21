@@ -75,7 +75,7 @@ class MusicPlayer:
     async def play_audio(self, audio_url):
         FFMPEG_OPTIONS = {
             'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn',
+            'options': '-vn -threads 4' ,
         }
         try:
             audio_source = discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS)
@@ -194,17 +194,12 @@ class MusicPlayer:
     async def skip(self):
         if self.voice_client and self.voice_client.is_playing():
             self.voice_client.stop()
-        
+            
         if self.loop_song:
             self.queue.insert(0, (self.now_playing, self.current_title))
-        elif len(self.queue) > 0:
-            await self.play_next()
         else:
             self.now_playing = None
             self.current_title = None
-            if self.voice_client and not self.voice_client.is_playing():
-                await self.voice_client.disconnect()
-                self.voice_client = None
 
 
 
