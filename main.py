@@ -29,10 +29,9 @@ class MyClient(discord.Client):
                 # Process the play command
                 await self.music_player.play(channel, message.content.split(' ', 1)[1], message.channel)
 
-                # Optionally delete or update the loading embed
-                await loading_message.delete()  # Or update the embed to indicate completion
-
-                await message.delete()  # Delete the user's message
+                # delete loading embed and user message
+                await loading_message.delete()
+                await message.delete()
             else:
                 await message.channel.send("You are not in a voice channel.")
 
@@ -73,22 +72,30 @@ class MyClient(discord.Client):
         elif message.content.startswith('!stop'):
             await self.music_player.stop()
 
-        # Add other commands as needed
+        # Queue Command
         if message.content.startswith('!queue'):
             args = message.content.split()
+            # Handles deleting songs from queue
             if len(args) >= 3 and args[1] == 'delete':
                 # Assuming the user provides the index to delete
                 index_to_delete = int(args[2]) - 1
                 self.music_player.delete_from_queue(index_to_delete)
+                # Confirmation message
                 await message.channel.send(f"Deleted song #{index_to_delete + 1} from the queue.")
             else:
+                # Format and send queue
                 queue_embed = self.music_player.format_queue()
                 await message.channel.send(embed=queue_embed)  # Send the embed directly
 
+        # Shuffle Command
         if message.content.startswith('!shuffle'):
             await self.music_player.shuffle_queue()
-            await message.channel.send("Queue shuffled.")
+            # Embed message when shuffled in blue
+            embed = discord.Embed(title="Queue Shuffled", description="The queue has been shuffled.", color=0x0000FF)
+            await message.channel.send(embed=embed)
 
+
+        # Loop Command
         if message.content.startswith('!loop'):
             if 'song' in message.content:
                 loop_status = self.music_player.toggle_loop_song()
@@ -99,6 +106,7 @@ class MyClient(discord.Client):
 
             await message.channel.send(f"Loop {loop_type}.")
 
+        # Help Command
         if message.content.startswith('!help'):
             embed = discord.Embed(title="Help", description="Commands for the bot", color=0x00ff00)
             embed.add_field(name="!play", value="Plays a song", inline=False)
